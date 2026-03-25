@@ -1,0 +1,34 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "Servidor backend para o Bot Trader com React",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "trading",
+    "bot",
+    "react",
+    "bybit"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "better-sqlite3": "^12.4.1",
+    "bybit-api": "^4.3.1",
+    "ccxt": "^4.5.44",
+    "chalk": "^4.1.2",
+    "dotenv": "^17.2.2",
+    "express": "^4.18.2",
+    "express-rate-limit": "^8.3.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "node-telegram-bot-api": "^0.67.0",
+    "socket.io": "^4.7.4",
+    "technicalindicators": "^3.1.0"
+  }
+}
