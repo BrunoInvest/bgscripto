@@ -20,7 +20,7 @@ const bybitClientManager = require('./services/bybitClient.js');
 const marketDataService = require('./services/marketDataService.js');
 const orderManager = require('./services/orderManager.js');
 const backtestService = require('./services/backtestService.js');
-const { fetchLivePositions, closeLivePosition, fetchOpenOrders, fetchMyTrades } = require('./services/exchangeService.js');
+const { fetchLivePositions, closeLivePosition, fetchOpenOrders } = require('./services/exchangeService.js');
 
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -78,14 +78,7 @@ app.get('/api/exchange/open-orders', requireAuth, async (req, res) => {
     }
 });
 
-app.get('/api/exchange/history', requireAuth, async (req, res) => {
-    try {
-        const history = await fetchMyTrades(req.user.id);
-        res.json(history);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
+
 
 // --- AUTO-SERVE FRONTEND (WebApp Monorepo - Nuvem) ---
 const frontendDistPath = path.join(__dirname, '../frontend/dist');

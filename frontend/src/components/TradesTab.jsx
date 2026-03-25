@@ -30,7 +30,7 @@ export const TradesTab = () => {
     const [strategyFilter, setStrategyFilter] = useState('ALL');
     const [livePositions, setLivePositions] = useState([]);
     const [openOrders, setOpenOrders] = useState([]);
-    const [tradeHistory, setTradeHistory] = useState([]);
+
     const [loadingLive, setLoadingLive] = useState(false);
     // Fetch Mestre - Dados Vivos (Sockets + Fallback Inicial)
     useEffect(() => {
@@ -49,8 +49,7 @@ export const TradesTab = () => {
                 const resOrd = await fetch('/api/exchange/open-orders', { headers: { 'Authorization': `Bearer ${token}` } });
                 if (resOrd.ok && isMounted) setOpenOrders(await resOrd.json());
 
-                const resHist = await fetch('/api/exchange/history', { headers: { 'Authorization': `Bearer ${token}` } });
-                if (resHist.ok && isMounted) setTradeHistory(await resHist.json());
+
             } catch (error) {
                 console.error("Erro no puxão inicial da janela:", error);
             }
@@ -62,17 +61,17 @@ export const TradesTab = () => {
         // 🔴 Arquitetura Baseada a Eventos WebSocket CCXT Pro (0-Latência)
         const handlePositions = (updatedPositions) => isMounted && setLivePositions(updatedPositions);
         const handleOrders = (updatedOrders) => isMounted && setOpenOrders(updatedOrders);
-        const handleHistory = (updatedHistory) => isMounted && setTradeHistory(updatedHistory);
+
 
         socket.on('positions_stream', handlePositions);
         socket.on('orders_stream', handleOrders);
-        socket.on('history_stream', handleHistory);
+
 
         return () => {
             isMounted = false;
             socket.off('positions_stream', handlePositions);
             socket.off('orders_stream', handleOrders);
-            socket.off('history_stream', handleHistory);
+
         };
     }, []);
 
@@ -119,9 +118,7 @@ export const TradesTab = () => {
                 <div className={`subnav-item ${activeTradeSubTab === 'abertas_broker' ? 'active' : ''}`} onClick={() => setActiveTradeSubTab('abertas_broker')}>
                     Órd. Nativa ({openOrders.length})
                 </div>
-                <div className={`subnav-item ${activeTradeSubTab === 'historico_broker' ? 'active' : ''}`} onClick={() => setActiveTradeSubTab('historico_broker')}>
-                    Hist. Nativo
-                </div>
+
                 <div className={`subnav-item ${activeTradeSubTab === 'abertas' ? 'active' : ''}`} onClick={() => setActiveTradeSubTab('abertas')}>
                     Lógicas Bot ({openTrades.length})
                 </div>
@@ -258,43 +255,7 @@ export const TradesTab = () => {
                 </div>
             )}
 
-            {/* ABA: HISTÓRICO NATIVO (BROKER) */}
-            {activeTradeSubTab === 'historico_broker' && (
-                <div className="trade-sub-content">
-                    {tradeHistory.length === 0 ? (
-                        <div style={{ textAlign: 'center', padding: '40px', color: '#848e9c' }}>Nenhum trade encontrado na corretora.</div>
-                    ) : (
-                        tradeHistory.map(trade => (
-                            <div className="exchange-card" key={trade.id}>
-                                <div className="exc-header">
-                                    <div className="exc-symbol">
-                                        <h1>{trade.symbol}</h1>
-                                        <span className="exc-badge" style={{background: trade.side === 'BUY' ? 'rgba(74, 222, 128, 0.2)' : 'rgba(248, 113, 113, 0.2)', color: trade.side === 'BUY' ? '#4ade80' : '#f87171'}}>{trade.side}</span>
-                                    </div>
-                                    <div className="exc-pnl">
-                                        <span className="label">Data/Hora</span>
-                                        <span className="val" style={{color: '#848e9c', fontSize: '10px'}}>{new Date(trade.timestamp).toLocaleString()}</span>
-                                    </div>
-                                </div>
-                                <div className="exc-grid">
-                                    <div className="exc-col">
-                                        <span className="label">Preço Executado</span>
-                                        <span className="val">{trade.price?.toFixed(4)}</span>
-                                    </div>
-                                    <div className="exc-col">
-                                        <span className="label">Quantidade</span>
-                                        <span className="val">{trade.amount}</span>
-                                    </div>
-                                    <div className="exc-col right">
-                                        <span className="label">Taxa (Fee)</span>
-                                        <span className="val loss">{trade.fee?.toFixed(4) || '0.00'}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        ))
-                    )}
-                </div>
-            )}
+
 
             {/* ABA: ORDENS LÓGICAS ABERTAS */}
             {activeTradeSubTab === 'abertas' && (

@@ -129,17 +129,7 @@ async function startWsStreams(userId, io) {
             }
         })();
 
-        // Loop: Trade History
-        (async () => {
-             while (activeWsStreams.get(userId)?.active) {
-                try {
-                    const trades = await client.watchMyTrades();
-                    io.to(`user_${userId}`).emit('history_stream', formatTradesForFrontend(trades, exchangeId));
-                } catch (e) {
-                    await new Promise(res => setTimeout(res, 5000));
-                }
-            }
-        })();
+
 
     } catch (e) {
         console.error(chalk.red(`[WS ENGINE] Falha fatal no WS para Usuário ${userId}:`), e.message);
