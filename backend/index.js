@@ -87,6 +87,22 @@ app.get('/api/exchange/history', requireAuth, async (req, res) => {
     }
 });
 
+// --- AUTO-SERVE FRONTEND (WebApp Monorepo - Nuvem) ---
+const frontendDistPath = path.join(__dirname, '../frontend/dist');
+app.use(express.static(frontendDistPath));
+
+app.get('*', (req, res) => {
+    // Preserva fallbacks 404 estritos para APIs inexistentes
+    if (req.path.startsWith('/api')) return res.status(404).json({ error: 'Endpoint não encontrado.' });
+    
+    // Devolve o aplicativo React para qualquer outra rota (Client-Side Routing)
+    if (fs.existsSync(path.join(frontendDistPath, 'index.html'))) {
+        res.sendFile(path.join(frontendDistPath, 'index.html'));
+    } else {
+        res.status(404).send('<h2>HFT WebApp Frontend não compilado ainda.</h2><p>Na nuvem, garanta que o comando de Start rodou o build do React ("npm run build").</p>');
+    }
+});
+
 const ESTIMATED_FEE_RATE = 0.00055; // Taxa estimada (Taker)
 
 const io = new Server(server, {
