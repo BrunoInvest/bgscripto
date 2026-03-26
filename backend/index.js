@@ -107,6 +107,7 @@ const io = new Server(server, {
 
 const jwtSecretLocal = process.env.JWT_SECRET || 'your-secret-key'; // Fallback compatível
 
+
 io.on('connection', (socket) => {
     const token = socket.handshake.auth?.token;
     if (!token) return socket.disconnect();
@@ -120,6 +121,9 @@ io.on('connection', (socket) => {
         
         // Ativação da Arquitetura CCXT Pro 0-Latência
         require('./services/exchangeService.js').startWsStreams(userId, io);
+        
+        // Disparo IMEDIATO do saldo (sem esperar o intervalo de 30s)
+        setTimeout(() => broadcastAccountBalance(userId), 2000);
         
         socket.on('disconnect', () => {
              console.log(chalk.gray(`[WEBSOCKET] Túnel encerrado para Usuário ${userId}.`));
@@ -794,32 +798,27 @@ io.on('connection', async (socket) => {
 
 async function broadcastAccountBalance(userId) {
     try {
-        const tenant = TENANTS.get(userId);
-        if (!tenant) return;
-        
         const data = await getLiveClient(userId);
         if (!data) return;
         
         const { client, exchangeId } = data;
         let balanceUsdt = 0;
-        
-        if (exchangeId === 'bingx') {
-            const bal = await client.fetchBalance();
-            if (bal.USDT && bal.USDT.total !== undefined) balanceUsdt = bal.USDT.total;
-        } else if (exchangeId === 'bybit') {
-            const result = await client.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' });
-            if (result.retCode === 0 && result.result?.list?.[0]) {
-                const account = result.result.list[0];
-                const usdtInfo = account.coin.find(c => c.coin === 'USDT');
-                if (usdtInfo) balanceUsdt = parseFloat(usdtInfo.walletBalance || 0);
-            }
+
+        // Usa fetchBalance do CCXT unificado (funciona em BingX, Bybit, etc)
+        const bal = await client.fetchBalance();
+        if (bal?.USDT?.total !== undefined) {
+            balanceUsdt = parseFloat(bal.USDT.total) || 0;
+        } else if (bal?.total?.USDT !== undefined) {
+            balanceUsdt = parseFloat(bal.total.USDT) || 0;
         }
         
+        console.log(chalk.green(`[WALLET] Usuário ${userId} | ${exchangeId.toUpperCase()} | Saldo USDT: ${balanceUsdt.toFixed(2)}`));
         io.to(`user_${userId}`).emit('wallet_balance_update', { balance: balanceUsdt, exchange: exchangeId });
     } catch(e) {
-        // console.error(chalk.red(`[WALLET ${userId}] Erro ao buscar saldo:`), e.message);
+        console.error(chalk.red(`[WALLET ${userId}] Erro ao buscar saldo:`), e.message);
     }
 }
+
 
 async function main() {
     console.log(chalk.bold.inverse('--- INICIANDO SERVIDOR DO BOT ---'));
