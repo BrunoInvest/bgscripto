@@ -20,7 +20,8 @@ const bybitClientManager = require('./services/bybitClient.js');
 const marketDataService = require('./services/marketDataService.js');
 const orderManager = require('./services/orderManager.js');
 const backtestService = require('./services/backtestService.js');
-const { fetchLivePositions, closeLivePosition, fetchOpenOrders } = require('./services/exchangeService.js');
+const { fetchLivePositions, closeLivePosition, fetchOpenOrders, cancelOrder, editOrder } = require('./services/exchangeService.js');
+
 
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -77,6 +78,27 @@ app.get('/api/exchange/open-orders', requireAuth, async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+app.post('/api/exchange/orders/cancel', requireAuth, async (req, res) => {
+    try {
+        const { orderId, symbol } = req.body;
+        const result = await cancelOrder(req.user.id, orderId, symbol);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/exchange/orders/edit', requireAuth, async (req, res) => {
+    try {
+        const { orderId, symbol, side, amount, price } = req.body;
+        const result = await editOrder(req.user.id, orderId, symbol, side, amount, price);
+        res.json({ success: true, result });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 
 
 

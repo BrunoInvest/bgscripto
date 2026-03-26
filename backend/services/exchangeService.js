@@ -202,10 +202,37 @@ async function closeLivePosition(userId, symbol, side, size) {
     }
 }
 
+async function cancelOrder(userId, orderId, symbol) {
+    const data = await getLiveClient(userId);
+    if (!data) throw new Error('Cliente Exchange indisponível.');
+    try {
+        return await data.client.cancelOrder(orderId, symbol);
+    } catch (e) { throw new Error(e.message); }
+}
+
+async function editOrder(userId, orderId, symbol, side, amount, price) {
+    const data = await getLiveClient(userId);
+    if (!data) throw new Error('Cliente Exchange indisponível.');
+    try {
+        // CCXT tenta editOrder nativo; se não suportado, cancela e recria
+        if (data.client.has['editOrder']) {
+            return await data.client.editOrder(orderId, symbol, undefined, side?.toLowerCase(), amount, price);
+        }
+        // Fallback: cancel + recreate
+        const existing = await data.client.fetchOrder(orderId, symbol);
+        await data.client.cancelOrder(orderId, symbol);
+        return await data.client.createLimitOrder(symbol, existing.side, amount, price);
+    } catch (e) { throw new Error(e.message); }
+}
+
 module.exports = {
     getLiveClient,
     fetchLivePositions,
     closeLivePosition,
     fetchOpenOrders,
-    fetchMyTrades
+    fetchMyTrades,
+    cancelOrder,
+    editOrder,
+    startWsStreams,
 };
+

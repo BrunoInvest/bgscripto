@@ -19,98 +19,165 @@ const formatDurationObj = (ms) => {
     return p.join(' ');
 };
 
+// Detecta o tipo da ordem nativa para mostrar o contexto correto no card
+function classifyOrder(order, positions) {
+    const sym = order.symbol;
+    const isReduceOnly = order.reduceOnly === true
+        || order.info?.reduceOnly === true
+        || order.info?.reduce_only === true
+        || order.info?.closePosition === true;
+
+    const type = (order.type || '').toLowerCase();
+    const hasStop = order.stopPrice
+        || order.info?.stopPrice
+        || order.info?.stop_price
+        || type.includes('stop') || type.includes('sl');
+
+    const hasOpenPosition = positions.some(p =>
+        p.ccxtSymbol === sym ||
+        p.symbol === sym ||
+        (sym || '').includes((p.symbol || '').replace('USDT', ''))
+    );
+
+    if (isReduceOnly && hasOpenPosition) {
+        if (hasStop) return { label: 'Stop Loss', badge: '#f87171', description: 'Protege posição aberta em ' + (sym || '') };
+        return { label: 'Take Profit', badge: '#4ade80', description: 'Realiza lucro da posição em ' + (sym || '') };
+    }
+    if (isReduceOnly) {
+        return { label: 'Fecha Pos.', badge: '#fb923c', description: 'Reduz/fecha posição (aguardando ativação)' };
+    }
+    return { label: 'Entrada Pendente', badge: '#60a5fa', description: 'Aguardando para abrir posição em ' + (sym || '') };
+}
+
 export const TradesTab = () => {
     const socket = getSocket();
     const { openTrades, closedTrades, strategies } = useStore();
-    const token = useStore((state) => state.token);
-    const activeExchange = useStore((state) => state.activeExchange);
-    const setActiveTab = useStore((state) => state.setActiveTab);
-    const setSelectedTradeContext = useStore((state) => state.setSelectedTradeContext);
     const [activeTradeSubTab, setActiveTradeSubTab] = useState('posicoes');
     const [strategyFilter, setStrategyFilter] = useState('ALL');
     const [livePositions, setLivePositions] = useState([]);
     const [openOrders, setOpenOrders] = useState([]);
-
     const [loadingLive, setLoadingLive] = useState(false);
-    // Fetch Mestre - Dados Vivos (Sockets + Fallback Inicial)
+    const [editingOrder, setEditingOrder] = useState(null);
+    const [editPrice, setEditPrice] = useState('');
+    const [savingOrder, setSavingOrder] = useState(false);
+
     useEffect(() => {
         let isMounted = true;
-        const socket = getSocket();
+        const sock = getSocket();
 
         const fetchInitialState = async () => {
             try {
-                const token = useStore.getState().token;
-                if (!token || !isMounted) return;
-                
-                // Puxões REST para carregar a tela instantaneamente ao abrir enquanto o WS conecta
-                const resPos = await fetch('/api/exchange/positions', { headers: { 'Authorization': `Bearer ${token}` } });
+                const tok = useStore.getState().token;
+                if (!tok || !isMounted) return;
+                const resPos = await fetch('/api/exchange/positions', { headers: { 'Authorization': `Bearer ${tok}` } });
                 if (resPos.ok && isMounted) setLivePositions(await resPos.json());
-
-                const resOrd = await fetch('/api/exchange/open-orders', { headers: { 'Authorization': `Bearer ${token}` } });
+                const resOrd = await fetch('/api/exchange/open-orders', { headers: { 'Authorization': `Bearer ${tok}` } });
                 if (resOrd.ok && isMounted) setOpenOrders(await resOrd.json());
-
-
-            } catch (error) {
-                console.error("Erro no puxão inicial da janela:", error);
-            }
+            } catch (e) { console.error('Fetch inicial:', e); }
         };
 
-        // Roda push inicial 1 vez
         fetchInitialState();
 
-        // 🔴 Arquitetura Baseada a Eventos WebSocket CCXT Pro (0-Latência)
-        const handlePositions = (updatedPositions) => isMounted && setLivePositions(updatedPositions);
-        const handleOrders = (updatedOrders) => isMounted && setOpenOrders(updatedOrders);
-
-
-        socket.on('positions_stream', handlePositions);
-        socket.on('orders_stream', handleOrders);
-
+        const onPositions = (d) => isMounted && setLivePositions(d);
+        const onOrders = (d) => isMounted && setOpenOrders(d);
+        sock.on('positions_stream', onPositions);
+        sock.on('orders_stream', onOrders);
 
         return () => {
             isMounted = false;
-            socket.off('positions_stream', handlePositions);
-            socket.off('orders_stream', handleOrders);
-
+            sock.off('positions_stream', onPositions);
+            sock.off('orders_stream', onOrders);
         };
     }, []);
 
+    // Fecha posição a mercado
     const handleForceCloseLive = async (pos) => {
-        const token = useStore.getState().token;
+        const tok = useStore.getState().token;
         try {
             setLoadingLive(true);
             const res = await fetch('/api/exchange/positions/close', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
                 body: JSON.stringify({ ccxtSymbol: pos.ccxtSymbol, side: pos.side, size: pos.size })
             });
             const data = await res.json();
+            if (res.ok) setLivePositions(prev => prev.filter(p => p.id !== pos.id));
+            else alert('Falha: ' + data.error);
+        } catch (e) { alert('Erro: ' + e.message); }
+        finally { setLoadingLive(false); }
+    };
+
+    // Cancela ordem nativa
+    const handleCancelOrder = async (orderId, symbol) => {
+        const tok = useStore.getState().token;
+        try {
+            const res = await fetch('/api/exchange/orders/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
+                body: JSON.stringify({ orderId, symbol })
+            });
+            const data = await res.json();
+            if (res.ok) setOpenOrders(prev => prev.filter(o => o.id !== orderId));
+            else alert('Falha ao cancelar: ' + data.error);
+        } catch (e) { alert('Erro: ' + e.message); }
+    };
+
+    // Edita preço de ordem nativa
+    const handleEditOrder = async (order) => {
+        const tok = useStore.getState().token;
+        const newPrice = parseFloat(editPrice);
+        if (!newPrice || isNaN(newPrice)) { alert('Preço inválido.'); return; }
+        try {
+            setSavingOrder(true);
+            const res = await fetch('/api/exchange/orders/edit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
+                body: JSON.stringify({ orderId: order.id, symbol: order.symbol, side: order.side, amount: order.amount, price: newPrice })
+            });
+            const data = await res.json();
             if (res.ok) {
-                setLivePositions(prev => prev.filter(p => p.id !== pos.id));
-            } else {
-                alert("Falha: " + data.error);
-            }
-        } catch (e) {
-            alert("Erro: " + e.message);
-        } finally {
-            setLoadingLive(false);
-        }
+                setOpenOrders(prev => prev.map(o => o.id === order.id ? { ...o, price: newPrice } : o));
+                setEditingOrder(null);
+            } else { alert('Falha ao editar: ' + data.error); }
+        } catch (e) { alert('Erro: ' + e.message); }
+        finally { setSavingOrder(false); }
     };
 
     const handleCloseSingle = (trade) => socket.emit('close_single_trade', trade.uniqueId);
-    
+
+    // Cruza ordens abertas com cada posição para descobrir TP e SL reais (como BingX faz)
+    const getTpSlForPosition = (pos) => {
+        const relatedOrders = openOrders.filter(o => {
+            const isReduce = o.reduceOnly === true
+                || o.info?.reduceOnly === true
+                || o.info?.reduce_only === true
+                || o.info?.closePosition === true;
+            const sameSymbol = o.symbol === pos.ccxtSymbol
+                || (o.symbol || '').includes((pos.symbol || '').replace('USDT', ''));
+            return isReduce && sameSymbol;
+        });
+        let tp = null, sl = null;
+        relatedOrders.forEach(o => {
+            const type = (o.type || '').toLowerCase();
+            const hasStop = o.stopPrice || o.info?.stopPrice || o.info?.stop_price || type.includes('stop');
+            if (hasStop) sl = o.stopPrice || o.info?.stopPrice || o.price;
+            else tp = o.price;
+        });
+        return { tp, sl };
+    };
+
     const filteredClosedTrades = useMemo(() => {
         if (strategyFilter === 'ALL') return closedTrades;
         return closedTrades.filter(t => t.strategyName === strategyFilter);
     }, [closedTrades, strategyFilter]);
 
-    const winners = useMemo(() => filteredClosedTrades.filter(t => t.pnl >= 0).sort((a,b) => b.timestamp - a.timestamp), [filteredClosedTrades]);
-    const losers = useMemo(() => filteredClosedTrades.filter(t => t.pnl < 0).sort((a,b) => b.timestamp - a.timestamp), [filteredClosedTrades]);
+    const winners = useMemo(() => filteredClosedTrades.filter(t => t.pnl >= 0).sort((a, b) => b.timestamp - a.timestamp), [filteredClosedTrades]);
+    const losers = useMemo(() => filteredClosedTrades.filter(t => t.pnl < 0).sort((a, b) => b.timestamp - a.timestamp), [filteredClosedTrades]);
 
     return (
         <div className="trades-tab-container" style={{ display: 'flex', flexDirection: 'column' }}>
-            
-            {/* SUB NAVEGAÇÃO NATIVA */}
+
+            {/* SUB NAVEGAÇÃO */}
             <div className="exchange-subnav" style={{ overflowX: 'auto', whiteSpace: 'nowrap', paddingBottom: '4px', display: 'flex' }}>
                 <div className={`subnav-item ${activeTradeSubTab === 'posicoes' ? 'active' : ''}`} onClick={() => setActiveTradeSubTab('posicoes')}>
                     Posição ({livePositions.length})
@@ -118,7 +185,6 @@ export const TradesTab = () => {
                 <div className={`subnav-item ${activeTradeSubTab === 'abertas_broker' ? 'active' : ''}`} onClick={() => setActiveTradeSubTab('abertas_broker')}>
                     Órd. Nativa ({openOrders.length})
                 </div>
-
                 <div className={`subnav-item ${activeTradeSubTab === 'abertas' ? 'active' : ''}`} onClick={() => setActiveTradeSubTab('abertas')}>
                     Lógicas Bot ({openTrades.length})
                 </div>
@@ -127,137 +193,192 @@ export const TradesTab = () => {
                 </div>
             </div>
 
-            {/* ABA: POSIÇÕES LIVE */}
+            {/* ═══ ABA: POSIÇÕES LIVE ═══ */}
             {activeTradeSubTab === 'posicoes' && (
                 <div className="trade-sub-content">
                     {livePositions.length === 0 ? (
                         <div style={{ textAlign: 'center', padding: '40px', color: '#848e9c' }}>Nenhuma posição viva na Corretora.</div>
                     ) : (
-                        livePositions.map(pos => (
-                            <div className="exchange-card" key={pos.id}>
-                                <div className="exc-header">
-                                    <div className="exc-symbol">
-                                        <h1>{pos.symbol}</h1>
-                                        <span className="exc-badge" style={{background: pos.side === 'LONG' ? 'rgba(74, 222, 128, 0.2)' : 'rgba(248, 113, 113, 0.2)', color: pos.side === 'LONG' ? '#4ade80' : '#f87171'}}>{pos.side}</span>
-                                        <span className="exc-badge">Isolada</span>
-                                        <span className="exc-badge">{pos.leverage}X</span>
-                                    </div>
-                                    <div className="exc-pnl">
-                                        <span className="label">PnL Não Realizado (USDT)</span>
-                                        <span className={`val ${pos.unrealizedPnl >= 0 ? 'profit' : 'loss'}`}>
-                                            {pos.unrealizedPnl >= 0 ? '+' : ''}{pos.unrealizedPnl.toFixed(4)}
-                                        </span>
-                                    </div>
-                                </div>
-                    
-                                <div className="exc-grid">
-                                    <div className="exc-col">
-                                        <span className="label">Posição (USDT)</span>
-                                        <span className="val">{(pos.size * pos.entryPrice).toFixed(4)}</span>
-                                    </div>
-                                    <div className="exc-col">
-                                        <span className="label">Margem (USDT)</span>
-                                        <span className="val">{((pos.entryPrice * pos.size) / pos.leverage).toFixed(4)}</span>
-                                    </div>
-                                    <div className="exc-col right">
-                                        <span className="label">Risco</span>
-                                        <span className="val profit">Auto</span>
-                                    </div>
-                                    
-                                    <div className="exc-col">
-                                        <span className="label">Preço de Entrada</span>
-                                        <span className="val">{pos.entryPrice?.toFixed(4)}</span>
-                                    </div>
-                                    <div className="exc-col">
-                                        <span className="label">Preço de Referência</span>
-                                        <span className="val">{pos.markPrice?.toFixed(4) || '---'}</span>
-                                    </div>
-                                    <div className="exc-col right">
-                                        <span className="label">Preço de Liq. Est.</span>
-                                        <span className="val profit">{pos.liqPrice?.toFixed(4) || '--'}</span>
+                        livePositions.map(pos => {
+                            const { tp, sl } = getTpSlForPosition(pos);
+                            return (
+                                <div className="exchange-card" key={pos.id}>
+                                    <div className="exc-header">
+                                        <div className="exc-symbol">
+                                            <h1>{pos.symbol}</h1>
+                                            <span className="exc-badge" style={{ background: pos.side === 'LONG' ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)', color: pos.side === 'LONG' ? '#4ade80' : '#f87171' }}>{pos.side}</span>
+                                            <span className="exc-badge">Isolada</span>
+                                            <span className="exc-badge">{pos.leverage}X</span>
+                                        </div>
+                                        <div className="exc-pnl">
+                                            <span className="label">PnL Não Realizado (USDT)</span>
+                                            <span className={`val ${pos.unrealizedPnl >= 0 ? 'profit' : 'loss'}`}>
+                                                {pos.unrealizedPnl >= 0 ? '+' : ''}{pos.unrealizedPnl.toFixed(4)}
+                                            </span>
+                                        </div>
                                     </div>
 
-                                    <div className="exc-col" style={{ gridColumn: 'span 3', marginTop: '4px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                                            <span className="label">PnL Realizado (USDT)</span>
-                                            <span className="val loss">-0.0000</span>
+                                    <div className="exc-grid">
+                                        <div className="exc-col">
+                                            <span className="label">Posição (USDT)</span>
+                                            <span className="val">{(pos.size * pos.entryPrice).toFixed(2)}</span>
                                         </div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span className="label" style={{color: '#eaecef', fontWeight: 'bold'}}>TP/SL</span>
-                                            <span className="label" style={{fontSize: '11px'}}>Posição inteira: {pos.takeProfit > 0 ? pos.takeProfit.toFixed(4) : '--'} / {pos.stopLoss > 0 ? pos.stopLoss.toFixed(4) : '--'} &gt;</span>
+                                        <div className="exc-col">
+                                            <span className="label">Margem (USDT)</span>
+                                            <span className="val">{((pos.entryPrice * pos.size) / pos.leverage).toFixed(2)}</span>
+                                        </div>
+                                        <div className="exc-col right">
+                                            <span className="label">Alavancagem</span>
+                                            <span className="val">{pos.leverage}x</span>
+                                        </div>
+                                        <div className="exc-col">
+                                            <span className="label">Preço de Entrada</span>
+                                            <span className="val">{pos.entryPrice?.toFixed(2)}</span>
+                                        </div>
+                                        <div className="exc-col">
+                                            <span className="label">Preço de Referência</span>
+                                            <span className="val">{pos.markPrice?.toFixed(2) || '---'}</span>
+                                        </div>
+                                        <div className="exc-col right">
+                                            <span className="label">Preço de Liq. Est.</span>
+                                            <span className="val loss">{pos.liqPrice > 0 ? pos.liqPrice.toFixed(2) : '--'}</span>
+                                        </div>
+
+                                        {/* TP/SL: puxado das ordens abertas correspondentes */}
+                                        <div className="exc-col" style={{ gridColumn: 'span 3', marginTop: '4px', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '8px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span className="label" style={{ color: '#eaecef', fontWeight: 'bold' }}>TP / SL (Ordens Ativas)</span>
+                                                <span style={{ fontSize: '12px' }}>
+                                                    <span className="profit" style={{ fontWeight: 'bold' }}>{tp ? Number(tp).toFixed(2) : '--'}</span>
+                                                    <span style={{ color: '#848e9c', margin: '0 6px' }}>/</span>
+                                                    <span className="loss" style={{ fontWeight: 'bold' }}>{sl ? Number(sl).toFixed(2) : '--'}</span>
+                                                </span>
+                                            </div>
+                                            {!tp && !sl && (
+                                                <span style={{ fontSize: '10px', color: '#848e9c' }}>Nenhuma ordem de TP/SL pendente encontrada na corretora</span>
+                                            )}
                                         </div>
                                     </div>
+
+                                    {/* ÚNICO BOTÃO DE FECHAMENTO */}
+                                    <div className="exc-actions">
+                                        <ConfirmButton
+                                            onConfirm={() => handleForceCloseLive(pos)}
+                                            className="exc-btn danger"
+                                            confirmText="Confirmar Fechar"
+                                            disabled={loadingLive}
+                                            style={{ width: '100%', padding: '10px', fontSize: '12px', fontWeight: 'bold' }}
+                                        >
+                                            🚨 Fechar Posição a Mercado
+                                        </ConfirmButton>
+                                    </div>
                                 </div>
-                    
-                                <div className="exc-actions" style={{ gap: '6px' }}>
-                                    <button className="exc-btn" onClick={() => { setSelectedTradeContext({ symbol: pos.symbol }); setActiveTab('config'); }} style={{ padding: '8px 4px', fontSize: '11px' }}>Definir TP/SL</button>
-                                    <button className="exc-btn" onClick={() => {
-                                        const pct = window.prompt(`Qual porcentagem de ${pos.symbol} deseja fechar a mercado? (1 a 100)`, '100');
-                                        if (pct && !isNaN(pct) && Number(pct) > 0 && Number(pct) <= 100) {
-                                            if (Number(pct) === 100) handleForceCloseLive(pos);
-                                            else alert('O fechamento parcial nativo CCXT está sendo implantado. Por favor, use "Fechamento rápido" para liquidar a posição completa ou feche parcial diretamente na corretora por segurança.');
-                                        }
-                                    }} style={{ padding: '8px 4px', fontSize: '11px' }}>Fechar</button>
-                                    <ConfirmButton 
-                                        onConfirm={() => handleForceCloseLive(pos)} 
-                                        className="exc-btn"
-                                        confirmText="Confirma"
-                                        disabled={loadingLive}
-                                        style={{ padding: '8px 4px', fontSize: '11px', flex: 1.5 }}
-                                    >
-                                        Fechamento rápido
-                                    </ConfirmButton>
-                                    <button className="exc-btn" onClick={() => alert('O recurso de Reversão Rápida (Inverter Posição a Mercado) será habilitado em breve via API Unificada CCXT.')} style={{ padding: '8px', flex: 0.3, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg>
-                                    </button>
-                                </div>
-                            </div>
-                        ))
+                            );
+                        })
                     )}
                 </div>
             )}
-            {/* ABA: ORDENS NATIVAS (BROKER) */}
+
+            {/* ═══ ABA: ORDENS NATIVAS (BROKER) ═══ */}
             {activeTradeSubTab === 'abertas_broker' && (
                 <div className="trade-sub-content">
                     {openOrders.length === 0 ? (
                         <div style={{ textAlign: 'center', padding: '40px', color: '#848e9c' }}>Nenhuma ordem nativa pendente na corretora.</div>
                     ) : (
-                        openOrders.map(order => (
-                            <div className="exchange-card" key={order.id}>
-                                <div className="exc-header">
-                                    <div className="exc-symbol">
-                                        <h1>{order.symbol}</h1>
-                                        <span className="exc-badge" style={{background: order.side === 'BUY' ? 'rgba(74, 222, 128, 0.2)' : 'rgba(248, 113, 113, 0.2)', color: order.side === 'BUY' ? '#4ade80' : '#f87171'}}>{order.side}</span>
-                                        <span className="exc-badge">{order.type}</span>
+                        openOrders.map(order => {
+                            const ctx = classifyOrder(order, livePositions);
+                            const isEditing = editingOrder === order.id;
+                            const displayPrice = order.price || order.stopPrice || order.info?.stopPrice;
+                            return (
+                                <div className="exchange-card" key={order.id}>
+                                    <div className="exc-header">
+                                        <div className="exc-symbol">
+                                            <h1>{(order.symbol || '').replace('/USDT:USDT', 'USDT').replace(':USDT', '')}</h1>
+                                            <span className="exc-badge" style={{ background: order.side === 'BUY' ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)', color: order.side === 'BUY' ? '#4ade80' : '#f87171' }}>{order.side}</span>
+                                            {/* Badge colorido indicando o propósito da ordem */}
+                                            <span className="exc-badge" style={{ background: ctx.badge + '25', color: ctx.badge, border: `1px solid ${ctx.badge}55`, fontWeight: 'bold' }}>
+                                                {ctx.label}
+                                            </span>
+                                        </div>
+                                        <div className="exc-pnl">
+                                            <span className="label" style={{ fontSize: '10px', color: '#848e9c', textAlign: 'right', display: 'block', lineHeight: '1.4' }}>
+                                                {ctx.description}
+                                            </span>
+                                        </div>
                                     </div>
-                                    <div className="exc-pnl">
-                                        <span className="label">Status</span>
-                                        <span className="val profit">{order.status}</span>
+
+                                    <div className="exc-grid">
+                                        <div className="exc-col">
+                                            <span className="label">Tipo</span>
+                                            <span className="val" style={{ textTransform: 'uppercase', fontSize: '10px' }}>{order.type}</span>
+                                        </div>
+                                        <div className="exc-col">
+                                            <span className="label">Quantidade</span>
+                                            <span className="val">{order.amount}</span>
+                                        </div>
+                                        <div className="exc-col right">
+                                            <span className="label">Status</span>
+                                            <span className="val profit">{order.status}</span>
+                                        </div>
+
+                                        {/* Campo de preço editável inline */}
+                                        <div className="exc-col" style={{ gridColumn: 'span 3', marginTop: '4px', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '8px' }}>
+                                            <span className="label" style={{ marginBottom: '6px', display: 'block' }}>Preço da Ordem</span>
+                                            {isEditing ? (
+                                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                                    <input
+                                                        type="number"
+                                                        value={editPrice}
+                                                        onChange={e => setEditPrice(e.target.value)}
+                                                        placeholder="Novo preço"
+                                                        style={{ flex: 1, padding: '7px 10px', background: '#0f141d', color: '#eaecef', border: '1px solid rgba(96,165,250,0.6)', borderRadius: '4px', fontSize: '13px' }}
+                                                        autoFocus
+                                                    />
+                                                    <button
+                                                        onClick={() => handleEditOrder(order)}
+                                                        disabled={savingOrder}
+                                                        className="exc-btn"
+                                                        style={{ padding: '7px 12px', background: 'rgba(74,222,128,0.15)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)', fontSize: '11px' }}
+                                                    >
+                                                        {savingOrder ? '...' : '✓'}
+                                                    </button>
+                                                    <button onClick={() => setEditingOrder(null)} className="exc-btn" style={{ padding: '7px 10px', fontSize: '11px' }}>✕</button>
+                                                </div>
+                                            ) : (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <span className="val" style={{ fontSize: '14px', fontWeight: 'bold' }}>
+                                                        {displayPrice ? Number(displayPrice).toFixed(2) : 'Market'}
+                                                    </span>
+                                                    <button
+                                                        onClick={() => { setEditingOrder(order.id); setEditPrice(displayPrice || ''); }}
+                                                        className="exc-btn"
+                                                        style={{ padding: '5px 12px', fontSize: '11px', color: '#60a5fa', border: '1px solid rgba(96,165,250,0.3)' }}
+                                                    >
+                                                        ✏️ Editar
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="exc-actions">
+                                        <ConfirmButton
+                                            onConfirm={() => handleCancelOrder(order.id, order.symbol)}
+                                            className="exc-btn danger"
+                                            confirmText="Confirmar"
+                                            style={{ width: '100%', padding: '9px', fontSize: '11px' }}
+                                        >
+                                            Cancelar Ordem
+                                        </ConfirmButton>
                                     </div>
                                 </div>
-                                <div className="exc-grid">
-                                    <div className="exc-col">
-                                        <span className="label">Preço</span>
-                                        <span className="val">{order.price || 'Market'}</span>
-                                    </div>
-                                    <div className="exc-col">
-                                        <span className="label">Qtd Total</span>
-                                        <span className="val">{order.amount}</span>
-                                    </div>
-                                    <div className="exc-col right">
-                                        <span className="label">Restante</span>
-                                        <span className="val">{order.remaining}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        ))
+                            );
+                        })
                     )}
                 </div>
             )}
 
-
-
-            {/* ABA: ORDENS LÓGICAS ABERTAS */}
+            {/* ═══ ABA: LÓGICAS BOT ═══ */}
             {activeTradeSubTab === 'abertas' && (
                 <div className="trade-sub-content">
                     {openTrades.length === 0 ? (
@@ -268,7 +389,7 @@ export const TradesTab = () => {
                                 <div className="exc-header">
                                     <div className="exc-symbol">
                                         <h1>{trade.symbol}</h1>
-                                        <span className="exc-badge" style={{background: trade.side === 'LONG' ? 'rgba(74, 222, 128, 0.2)' : 'rgba(248, 113, 113, 0.2)', color: trade.side === 'LONG' ? '#4ade80' : '#f87171'}}>{trade.side}</span>
+                                        <span className="exc-badge" style={{ background: trade.side === 'LONG' ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)', color: trade.side === 'LONG' ? '#4ade80' : '#f87171' }}>{trade.side}</span>
                                         <span className="exc-badge">{trade.strategyLabel}</span>
                                         <span className="exc-badge">{trade.interval}m</span>
                                     </div>
@@ -279,7 +400,6 @@ export const TradesTab = () => {
                                         </span>
                                     </div>
                                 </div>
-                                
                                 <div className="exc-grid">
                                     <div className="exc-col">
                                         <span className="label">Entrada Exata</span>
@@ -294,15 +414,14 @@ export const TradesTab = () => {
                                         <span className="val">{formatDurationObj(trade.durationMs)}</span>
                                     </div>
                                 </div>
-
                                 <div className="exc-actions">
-                                    <button className="exc-btn" style={{ opacity: 0.5, cursor: 'not-allowed' }}>Modificar TP/SL</button>
-                                    <ConfirmButton 
-                                        onConfirm={() => handleCloseSingle(trade)} 
+                                    <ConfirmButton
+                                        onConfirm={() => handleCloseSingle(trade)}
                                         className="exc-btn danger"
                                         confirmText="Confirmar"
+                                        style={{ width: '100%' }}
                                     >
-                                        Forçar Encerramento
+                                        Forçar Encerramento Lógico
                                     </ConfirmButton>
                                 </div>
                             </div>
@@ -311,12 +430,12 @@ export const TradesTab = () => {
                 </div>
             )}
 
-            {/* ABA: HISTÓRICO FECHADO */}
+            {/* ═══ ABA: HISTÓRICO (BOT) ═══ */}
             {activeTradeSubTab === 'historico' && (
                 <div className="trade-sub-content">
                     <div style={{ marginBottom: '15px' }}>
-                        <select 
-                            value={strategyFilter} 
+                        <select
+                            value={strategyFilter}
                             onChange={(e) => setStrategyFilter(e.target.value)}
                             style={{ width: '100%', padding: '12px', background: '#0f141d', color: '#eaecef', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px' }}
                         >
@@ -324,23 +443,11 @@ export const TradesTab = () => {
                             {strategies.map(s => <option key={s.name} value={s.name}>{s.label}</option>)}
                         </select>
                     </div>
-
-                    <TradeHistoryTable
-                        title="Histórico de Ganhos"
-                        trades={winners}
-                        expandedTradeId={null}
-                        handleRowClick={() => {}}
-                    />
-
-                    <TradeHistoryTable
-                        title="Histórico de Perdas"
-                        trades={losers}
-                        expandedTradeId={null}
-                        handleRowClick={() => {}}
-                    />
+                    <TradeHistoryTable title="Histórico de Ganhos" trades={winners} expandedTradeId={null} handleRowClick={() => {}} />
+                    <TradeHistoryTable title="Histórico de Perdas" trades={losers} expandedTradeId={null} handleRowClick={() => {}} />
                 </div>
             )}
-            
+
         </div>
     );
 };
