@@ -19,35 +19,55 @@ const formatDurationObj = (ms) => {
     return p.join(' ');
 };
 
-// Detecta o tipo da ordem nativa para mostrar o contexto correto no card
+// Detecta o tipo da ordem nativa com lógica baseada em lado oposto à posição
 function classifyOrder(order, positions) {
-    const sym = order.symbol;
-    const isReduceOnly = order.reduceOnly === true
-        || order.info?.reduceOnly === true
-        || order.info?.reduce_only === true
-        || order.info?.closePosition === true;
+    const rawType = (order.rawType || order.type || '').toUpperCase();
 
-    const type = (order.type || '').toLowerCase();
-    const hasStop = order.stopPrice
-        || order.info?.stopPrice
-        || order.info?.stop_price
-        || type.includes('stop') || type.includes('sl');
-
-    const hasOpenPosition = positions.some(p =>
-        p.ccxtSymbol === sym ||
-        p.symbol === sym ||
-        (sym || '').includes((p.symbol || '').replace('USDT', ''))
-    );
-
-    if (isReduceOnly && hasOpenPosition) {
-        if (hasStop) return { label: 'Stop Loss', badge: '#f87171', description: 'Protege posição aberta em ' + (sym || '') };
-        return { label: 'Take Profit', badge: '#4ade80', description: 'Realiza lucro da posição em ' + (sym || '') };
+    // Detecção direta pelo tipo raw da exchange (BingX/Bybit nomeiam claramente)
+    if (rawType.includes('TAKE_PROFIT')) {
+        const pos = positions.find(p => orderMatchesPosition(order, p));
+        return { label: 'Take Profit', badge: '#4ade80', description: pos ? `Fecha posição ${pos.side} em ${pos.symbol}` : 'Realiza lucro ao atingir preço' };
     }
-    if (isReduceOnly) {
-        return { label: 'Fecha Pos.', badge: '#fb923c', description: 'Reduz/fecha posição (aguardando ativação)' };
+    if (rawType.includes('STOP_MARKET') || rawType.includes('STOP_LIMIT') || rawType.includes('STOP')) {
+        const pos = positions.find(p => orderMatchesPosition(order, p));
+        return { label: 'Stop Loss', badge: '#f87171', description: pos ? `Protege posição ${pos.side} em ${pos.symbol}` : 'Para perda ao atingir preço' };
     }
-    return { label: 'Entrada Pendente', badge: '#60a5fa', description: 'Aguardando para abrir posição em ' + (sym || '') };
+
+    // Detecção pela relação lado-oposto (SELL em posição LONG = fechamento)
+    const closingPosition = positions.find(p => orderMatchesPosition(order, p));
+
+    if (closingPosition) {
+        const isOppositeSide = (
+            (closingPosition.side === 'LONG' && order.side === 'SELL') ||
+            (closingPosition.side === 'SHORT' && order.side === 'BUY')
+        );
+        if (isOppositeSide) {
+            // Distingue TP de SL pelo preço vs entrada
+            const orderPrice = order.price || order.stopPrice;
+            const isProfit = closingPosition.side === 'LONG'
+                ? orderPrice > closingPosition.entryPrice
+                : orderPrice < closingPosition.entryPrice;
+            if (isProfit) {
+                return { label: 'Take Profit', badge: '#4ade80', description: `Fecha posição ${closingPosition.side} em ${closingPosition.symbol}` };
+            }
+            return { label: 'Stop Loss', badge: '#f87171', description: `Protege posição ${closingPosition.side} em ${closingPosition.symbol}` };
+        }
+    }
+
+    if (order.reduceOnly) {
+        return { label: 'Fecha Pos.', badge: '#fb923c', description: 'Reduz posição aberta' };
+    }
+
+    return { label: 'Entrada Pendente', badge: '#60a5fa', description: 'Aguarda para abrir nova posição' };
 }
+
+// Verifica se uma ordem corresponde a uma posição pelo símbolo
+function orderMatchesPosition(order, pos) {
+    const orderSym = (order.symbol || '').replace('/USDT:USDT', 'USDT').replace(':USDT', '').replace('/USDT', 'USDT');
+    const posSym = (pos.symbol || '').replace('/USDT:USDT', 'USDT').replace(':USDT', '').replace('/USDT', 'USDT');
+    return orderSym === posSym || order.symbol === pos.ccxtSymbol;
+}
+
 
 export const TradesTab = () => {
     const socket = getSocket();
@@ -145,26 +165,50 @@ export const TradesTab = () => {
 
     const handleCloseSingle = (trade) => socket.emit('close_single_trade', trade.uniqueId);
 
-    // Cruza ordens abertas com cada posição para descobrir TP e SL reais (como BingX faz)
+    // Cruza ordens abertas com a posição para descobrir TP e SL reais
     const getTpSlForPosition = (pos) => {
-        const relatedOrders = openOrders.filter(o => {
-            const isReduce = o.reduceOnly === true
-                || o.info?.reduceOnly === true
-                || o.info?.reduce_only === true
-                || o.info?.closePosition === true;
-            const sameSymbol = o.symbol === pos.ccxtSymbol
-                || (o.symbol || '').includes((pos.symbol || '').replace('USDT', ''));
-            return isReduce && sameSymbol;
+        const closingOrders = openOrders.filter(o => {
+            // Mesma lógica do classifyOrder: verifica se é do mesmo símbolo
+            if (!orderMatchesPosition(o, pos)) return false;
+
+            const rawType = (o.rawType || o.type || '').toUpperCase();
+
+            // Detecção 1: rawType explícito da exchange (mais confiável)
+            if (rawType.includes('TAKE_PROFIT') || rawType.includes('STOP_MARKET') ||
+                rawType.includes('STOP_LIMIT') || rawType.includes('STOP')) return true;
+
+            // Detecção 2: reduceOnly confirmado
+            if (o.reduceOnly === true) return true;
+
+            // Detecção 3: lado oposto à posição (SELL em LONG = fechamento)
+            const isOppositeSide = (pos.side === 'LONG' && o.side === 'SELL') ||
+                                   (pos.side === 'SHORT' && o.side === 'BUY');
+            return isOppositeSide;
         });
+
         let tp = null, sl = null;
-        relatedOrders.forEach(o => {
-            const type = (o.type || '').toLowerCase();
-            const hasStop = o.stopPrice || o.info?.stopPrice || o.info?.stop_price || type.includes('stop');
-            if (hasStop) sl = o.stopPrice || o.info?.stopPrice || o.price;
-            else tp = o.price;
+        closingOrders.forEach(o => {
+            const rawType = (o.rawType || o.type || '').toUpperCase();
+            const orderPrice = o.price || o.stopPrice;
+
+            // Detecção por rawType tem prioridade
+            if (rawType.includes('TAKE_PROFIT')) { tp = orderPrice; return; }
+            if (rawType.includes('STOP')) { sl = o.stopPrice || orderPrice; return; }
+
+            // Fallback: preço maior que entrada = TP, menor = SL (para LONG)
+            if (orderPrice && pos.entryPrice) {
+                if (pos.side === 'LONG') {
+                    if (orderPrice > pos.entryPrice) tp = orderPrice;
+                    else sl = orderPrice;
+                } else {
+                    if (orderPrice < pos.entryPrice) tp = orderPrice;
+                    else sl = orderPrice;
+                }
+            }
         });
         return { tp, sl };
     };
+
 
     const filteredClosedTrades = useMemo(() => {
         if (strategyFilter === 'ALL') return closedTrades;

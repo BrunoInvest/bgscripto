@@ -51,20 +51,45 @@ function formatPositionsForFrontend(positions, exchangeId) {
 }
 
 function formatOrdersForFrontend(orders, exchangeId) {
-    return orders.map(o => ({
-        id: o.id,
-        symbol: o.symbol,
-        side: o.side ? o.side.toUpperCase() : 'UNKNOWN',
-        price: o.price,
-        amount: o.amount,
-        remaining: o.remaining,
-        status: o.status,
-        timestamp: o.timestamp,
-        datetime: o.datetime,
-        type: o.type,
-        exchange: exchangeId
-    }));
+    return orders.map(o => {
+        // BingX e Bybit armazenam o tipo real em info
+        const rawType = (o.info?.type || o.info?.orderType || o.type || '').toUpperCase();
+        // stopPrice pode estar em vários campos dependendo da exchange
+        const stopPrice = o.stopPrice
+            || o.info?.stopPrice
+            || o.info?.stop_price
+            || o.info?.triggerPrice
+            || o.info?.trigger_price
+            || null;
+        // reduceOnly: BingX usa o campo reduceOnly ou closePosition
+        const reduceOnly = o.reduceOnly === true
+            || o.info?.reduceOnly === true
+            || o.info?.reduce_only === true
+            || o.info?.closePosition === true
+            || rawType.includes('TAKE_PROFIT')
+            || rawType.includes('STOP_MARKET')
+            || rawType.includes('STOP_LIMIT')
+            || false;
+
+        return {
+            id: o.id,
+            symbol: o.symbol,
+            side: o.side ? o.side.toUpperCase() : 'UNKNOWN',
+            price: o.price,
+            stopPrice: stopPrice,
+            amount: o.amount,
+            remaining: o.remaining,
+            status: o.status,
+            timestamp: o.timestamp,
+            datetime: o.datetime,
+            type: o.type,
+            rawType: rawType,       // ex: TAKE_PROFIT_MARKET, STOP_MARKET, LIMIT
+            reduceOnly: reduceOnly,
+            exchange: exchangeId
+        };
+    });
 }
+
 
 function formatTradesForFrontend(trades, exchangeId) {
     return trades.map(t => ({
