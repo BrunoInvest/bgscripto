@@ -38,6 +38,7 @@ export const useStore = create((set, get) => ({
         settings: data.settings,
         strategies: data.strategies || [],
         activeExchange: data.activeExchange || 'bybit',
+        walletBalance: data.walletBalance || { balance: 0, exchange: '' }
     }),
     
     setBotStatus: (data) => set({ 

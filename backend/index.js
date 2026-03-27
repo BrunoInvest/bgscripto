@@ -744,6 +744,8 @@ io.on('connection', async (socket) => {
     const closedTrades = db.prepare('SELECT * FROM closed_trades WHERE user_id = ? ORDER BY timestamp DESC').all(userId)
         .map(t => ({...t, configsUsed: JSON.parse(t.configsUsed), entryIndicators: JSON.parse(t.entryIndicators), exitIndicators: JSON.parse(t.exitIndicators || '{}')}));
     
+    const walletBalanceData = await getAccountBalance(userId);
+
     socket.emit('initial_data', { 
         settings: tenant.settings, 
         strategies: Array.from(STRATEGIES.values()), 
@@ -751,12 +753,10 @@ io.on('connection', async (socket) => {
         closedTrades, 
         isBotRunning: tenant.state.isBotRunning, 
         botStartTime: tenant.state.botStartTime, 
-        activeExchange: tenant.state.activeExchange 
+        activeExchange: tenant.state.activeExchange,
+        walletBalance: walletBalanceData
     });
 
-    // Envia saldo imediato na conexão (evita erro de timing)
-    broadcastAccountBalance(userId);
-    
     // Polling a cada 10s para atualizar saldo "em tempo real" atrelado ao socket
     const balanceInterval = setInterval(() => {
         broadcastAccountBalance(userId);
@@ -839,10 +839,10 @@ io.on('connection', async (socket) => {
     });
 });
 
-async function broadcastAccountBalance(userId) {
+async function getAccountBalance(userId) {
     try {
         const data = await getLiveClient(userId);
-        if (!data) return;
+        if (!data) return { balance: 0, exchange: '' };
 
         const { client, exchangeId } = data;
         let balanceUsdt = 0;
@@ -859,7 +859,6 @@ async function broadcastAccountBalance(userId) {
         }
         // Estratégia 3: Percorre info da BingX (formato swap específico)
         else if (bal?.info) {
-            // BingX swap retorna em info.data[].balance ou info.data[].equity
             const infoData = bal.info?.data || bal.info?.result?.list || [];
             for (const item of (Array.isArray(infoData) ? infoData : [])) {
                 if (item.asset === 'USDT' || item.coin === 'USDT' || item.currency === 'USDT') {
@@ -876,18 +875,25 @@ async function broadcastAccountBalance(userId) {
             );
         }
 
-        // Loga apenas quando o saldo muda (evita spam no terminal)
-        const lastBalance = broadcastAccountBalance._cache?.get(userId);
-        if (lastBalance !== balanceUsdt) {
-            if (!broadcastAccountBalance._cache) broadcastAccountBalance._cache = new Map();
-            broadcastAccountBalance._cache.set(userId, balanceUsdt);
-            console.log(chalk.green(`[WALLET] Usuário ${userId} | ${exchangeId.toUpperCase()} | Saldo USDT: ${balanceUsdt.toFixed(2)}`));
-        }
-        io.to(`user_${userId}`).emit('wallet_balance_update', { balance: balanceUsdt, exchange: exchangeId });
-
+        return { balance: balanceUsdt, exchange: exchangeId };
     } catch(e) {
         console.error(chalk.red(`[WALLET ${userId}] Erro ao buscar saldo:`), e.message);
+        return { balance: 0, exchange: '' };
     }
+}
+
+async function broadcastAccountBalance(userId) {
+    const data = await getAccountBalance(userId);
+    if (!data.exchange) return;
+
+    // Loga apenas quando o saldo muda (evita spam no terminal)
+    const lastBalance = broadcastAccountBalance._cache?.get(userId);
+    if (lastBalance !== data.balance) {
+        if (!broadcastAccountBalance._cache) broadcastAccountBalance._cache = new Map();
+        broadcastAccountBalance._cache.set(userId, data.balance);
+        console.log(chalk.green(`[WALLET] Usuário ${userId} | ${data.exchange.toUpperCase()} | Saldo USDT: ${data.balance.toFixed(2)}`));
+    }
+    io.to(`user_${userId}`).emit('wallet_balance_update', data);
 }
 
 
