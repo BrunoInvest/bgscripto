@@ -754,6 +754,14 @@ io.on('connection', async (socket) => {
         activeExchange: tenant.state.activeExchange 
     });
 
+    // Envia saldo imediato na conexão (evita erro de timing)
+    broadcastAccountBalance(userId);
+    
+    // Polling a cada 10s para atualizar saldo "em tempo real" atrelado ao socket
+    const balanceInterval = setInterval(() => {
+        broadcastAccountBalance(userId);
+    }, 10000);
+
     socket.on('toggle_bot', () => {
         tenant.state.isBotRunning = !tenant.state.isBotRunning;
         tenant.state.botStartTime = tenant.state.isBotRunning ? Date.now() : null;
@@ -825,7 +833,10 @@ io.on('connection', async (socket) => {
         } catch (error) { console.error(error); }
     });
 
-    socket.on('disconnect', () => console.log(chalk.yellow('[IO] Cliente desconectado:', socket.id)));
+    socket.on('disconnect', () => {
+        clearInterval(balanceInterval);
+        console.log(chalk.yellow('[IO] Cliente desconectado:', socket.id));
+    });
 });
 
 async function broadcastAccountBalance(userId) {
