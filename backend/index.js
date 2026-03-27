@@ -79,6 +79,16 @@ app.get('/api/exchange/open-orders', requireAuth, async (req, res) => {
     }
 });
 
+app.get('/api/exchange/balance', requireAuth, async (req, res) => {
+    try {
+        await broadcastAccountBalance(req.user.id);
+        res.json({ ok: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+
 app.post('/api/exchange/orders/cancel', requireAuth, async (req, res) => {
     try {
         const { orderId, symbol } = req.body;
@@ -855,8 +865,15 @@ async function broadcastAccountBalance(userId) {
             );
         }
 
-        console.log(chalk.green(`[WALLET] Usuário ${userId} | ${exchangeId.toUpperCase()} | Saldo USDT: ${balanceUsdt.toFixed(2)}`));
+        // Loga apenas quando o saldo muda (evita spam no terminal)
+        const lastBalance = broadcastAccountBalance._cache?.get(userId);
+        if (lastBalance !== balanceUsdt) {
+            if (!broadcastAccountBalance._cache) broadcastAccountBalance._cache = new Map();
+            broadcastAccountBalance._cache.set(userId, balanceUsdt);
+            console.log(chalk.green(`[WALLET] Usuário ${userId} | ${exchangeId.toUpperCase()} | Saldo USDT: ${balanceUsdt.toFixed(2)}`));
+        }
         io.to(`user_${userId}`).emit('wallet_balance_update', { balance: balanceUsdt, exchange: exchangeId });
+
     } catch(e) {
         console.error(chalk.red(`[WALLET ${userId}] Erro ao buscar saldo:`), e.message);
     }

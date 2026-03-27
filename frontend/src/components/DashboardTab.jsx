@@ -23,6 +23,14 @@ export const DashboardTab = () => {
 
     const [uptime, setUptime] = useState('00:00:00');
 
+    // Busca o saldo via REST ao montar (evita problema de timing do socket)
+    useEffect(() => {
+        const tok = useStore.getState().token;
+        if (!tok) return;
+        fetch('/api/exchange/balance', { headers: { 'Authorization': `Bearer ${tok}` } })
+            .catch(() => {}); // o backend emite via socket após buscar
+    }, []);
+
     useEffect(() => {
         let interval;
         if (isBotRunning && botStartTime) {
