@@ -140,6 +140,12 @@ function initTelegramBot() {
             }
         });
 
+        botInstance.onText(/\/limpar/, (msg) => {
+            if (!isAuthorized(msg)) return;
+            const blanks = Array.from({ length: 50 }, () => "ㅤ").join('\n');
+            botInstance.sendMessage(msg.chat.id, blanks + "\n🧹 *Chat limpo!*", { parse_mode: 'Markdown' });
+        });
+
         botInstance.onText(/\/fechartudo/, async (msg) => {
             if (!isAuthorized(msg)) return;
             const chatId = msg.chat.id;
@@ -202,7 +208,7 @@ function registerDynamicTunnelUrl(url) {
             chat_id: chatId,
             menu_button: {
                 type: 'web_app',
-                text: 'TELA DO ROBÔ',
+                text: '🚀 ABRIR APP HFT',
                 web_app: { url: url }
             }
         });
