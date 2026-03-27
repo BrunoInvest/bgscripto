@@ -100,13 +100,30 @@ export const TradesTab = () => {
 
         const onPositions = (d) => isMounted && setLivePositions(d);
         const onOrders = (d) => isMounted && setOpenOrders(d);
+        
+        // Simulação 0-Latência usando o stream de Posições (Mark Price + PnL)
+        const onTicker = (ticker) => {
+            if (!isMounted || !ticker || !ticker.lastPrice) return;
+            setLivePositions(prev => prev.map(p => {
+                const pSymbol = p.symbol ? p.symbol.replace('/USDT:USDT', 'USDT').replace(':', '') : '';
+                if (pSymbol === ticker.symbol) {
+                    const price = ticker.lastPrice;
+                    const unrealizedPnl = p.size * (price - p.entryPrice) * (p.side === 'SHORT' ? -1 : 1);
+                    return { ...p, markPrice: price, unrealizedPnl };
+                }
+                return p;
+            }));
+        };
+
         sock.on('positions_stream', onPositions);
         sock.on('orders_stream', onOrders);
+        sock.on('ticker_update', onTicker);
 
         return () => {
             isMounted = false;
             sock.off('positions_stream', onPositions);
             sock.off('orders_stream', onOrders);
+            sock.off('ticker_update', onTicker);
         };
     }, []);
 
