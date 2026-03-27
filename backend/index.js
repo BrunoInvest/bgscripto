@@ -822,24 +822,46 @@ async function broadcastAccountBalance(userId) {
     try {
         const data = await getLiveClient(userId);
         if (!data) return;
-        
+
         const { client, exchangeId } = data;
         let balanceUsdt = 0;
 
-        // Usa fetchBalance do CCXT unificado (funciona em BingX, Bybit, etc)
         const bal = await client.fetchBalance();
-        if (bal?.USDT?.total !== undefined) {
-            balanceUsdt = parseFloat(bal.USDT.total) || 0;
-        } else if (bal?.total?.USDT !== undefined) {
-            balanceUsdt = parseFloat(bal.total.USDT) || 0;
+
+        // Estratégia 1: estrutura padrão CCXT
+        if (bal?.USDT?.total !== undefined && bal.USDT.total > 0) {
+            balanceUsdt = parseFloat(bal.USDT.total);
         }
-        
+        // Estratégia 2: total.USDT
+        else if (bal?.total?.USDT !== undefined && bal.total.USDT > 0) {
+            balanceUsdt = parseFloat(bal.total.USDT);
+        }
+        // Estratégia 3: Percorre info da BingX (formato swap específico)
+        else if (bal?.info) {
+            // BingX swap retorna em info.data[].balance ou info.data[].equity
+            const infoData = bal.info?.data || bal.info?.result?.list || [];
+            for (const item of (Array.isArray(infoData) ? infoData : [])) {
+                if (item.asset === 'USDT' || item.coin === 'USDT' || item.currency === 'USDT') {
+                    const val = parseFloat(item.balance || item.equity || item.walletBalance || item.availableBalance || 0);
+                    if (val > 0) { balanceUsdt = val; break; }
+                }
+            }
+        }
+
+        // Debug: loga a estrutura completa quando ainda zerado para diagnóstico
+        if (balanceUsdt === 0) {
+            console.warn(chalk.yellow(`[WALLET ${userId}] Saldo USDT = 0 em ${exchangeId}. Estrutura recebida:`),
+                JSON.stringify({ USDT: bal?.USDT, total: bal?.total, infoKeys: bal?.info ? Object.keys(bal.info).slice(0, 5) : [] })
+            );
+        }
+
         console.log(chalk.green(`[WALLET] Usuário ${userId} | ${exchangeId.toUpperCase()} | Saldo USDT: ${balanceUsdt.toFixed(2)}`));
         io.to(`user_${userId}`).emit('wallet_balance_update', { balance: balanceUsdt, exchange: exchangeId });
     } catch(e) {
         console.error(chalk.red(`[WALLET ${userId}] Erro ao buscar saldo:`), e.message);
     }
 }
+
 
 
 async function main() {

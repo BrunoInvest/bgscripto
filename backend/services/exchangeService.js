@@ -196,11 +196,37 @@ async function fetchLivePositions(userId) {
 async function fetchOpenOrders(userId) {
     const data = await getLiveClient(userId);
     if (!data) return [];
+    const { client, exchangeId } = data;
+
     try {
-        const orders = await data.client.fetchOpenOrders();
-        return formatOrdersForFrontend(orders, data.exchangeId);
-    } catch (e) { return []; }
+        // Para BingX: TP/SL ficam em categorias separadas — precisamos buscar todas
+        if (exchangeId === 'bingx') {
+            const [normalOrders, tpOrders, slOrders] = await Promise.allSettled([
+                client.fetchOpenOrders(undefined, undefined, undefined, {}),
+                client.fetchOpenOrders(undefined, undefined, undefined, { type: 'TAKE_PROFIT_MARKET' }),
+                client.fetchOpenOrders(undefined, undefined, undefined, { type: 'STOP_MARKET' }),
+            ]);
+
+            const allOrders = [
+                ...(normalOrders.status === 'fulfilled' ? normalOrders.value : []),
+                ...(tpOrders.status   === 'fulfilled' ? tpOrders.value   : []),
+                ...(slOrders.status   === 'fulfilled' ? slOrders.value   : []),
+            ];
+
+            // Remove duplicatas por ID
+            const unique = Array.from(new Map(allOrders.map(o => [o.id, o])).values());
+            return formatOrdersForFrontend(unique, exchangeId);
+        }
+
+        // Bybit e outras exchanges: chamada padrão
+        const orders = await client.fetchOpenOrders();
+        return formatOrdersForFrontend(orders, exchangeId);
+    } catch (e) {
+        console.error(`[ORDERS] Erro ao buscar ordens para ${exchangeId}:`, e.message);
+        return [];
+    }
 }
+
 
 async function fetchMyTrades(userId) {
     const data = await getLiveClient(userId);
